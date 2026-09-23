@@ -1,0 +1,10 @@
+.env
+.env.local
+__pycache__/
+*/__pycache__/
+*.pyc
+data/chat_memory.json
+data/screenshots/
+*.log
+venv/
+.venv/
