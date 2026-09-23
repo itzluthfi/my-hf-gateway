@@ -184,22 +184,57 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text, reply_markup=main_dashboard_keyboard(uid), parse_mode="Markdown")
 
 
+async def notify_admin_activity(context: ContextTypes.DEFAULT_TYPE, user, action_type: str, detail: str):
+    """Kirim notifikasi aktivitas prompt/generate user ke Admin."""
+    if not ADMIN_ID:
+        return
+    try:
+        username = f"@{user.username}" if user.username else user.first_name
+        text = (
+            f"🔔 *[AKTIVITAS USER]*\n"
+            f"👤 *User:* {user.first_name} (`{username}`) [ID: `{user.id}`]\n"
+            f"⚡ *Aksi:* `{action_type}`\n"
+            f"📝 *Prompt/Input:*\n_{detail}_\n"
+            f"⏱️ *Waktu:* `{time.strftime('%Y-%m-%d %H:%M:%S')}`"
+        )
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text, parse_mode="Markdown")
+    except Exception as e:
+        logging.warning(f"Gagal mengirim notif ke admin: {e}")
+
+
 async def execute_browser_task(update: Update, context: ContextTypes.DEFAULT_TYPE, raw_url: str):
-    """Eksekusi Live Browser dengan tombol Stop."""
+    """Eksekusi Live Browser dengan Antrean dan tombol Stop."""
     uid = update.effective_user.id
+    user = update.effective_user
+    
+    # Kirim notif ke admin
+    await notify_admin_activity(context, user, "Live Browser", raw_url)
+
     status_msg = await update.message.reply_text(
-        f"🌐 *Membuka headless Chromium ke:* `{raw_url}`...",
+        f"🌐 *Mempersiapkan browser ke:* `{raw_url}`...",
         reply_markup=cancel_button_keyboard(),
         parse_mode="Markdown"
     )
 
-    async def _runner():
+    async def _queue_cb(wait_pos: int, est_sec: int):
+        await status_msg.edit_text(
+            f"⏳ *Antrean Browser #{wait_pos}*\nServer sedang memproses tugas lain. Estimasi giliran: ~{est_sec}s...",
+            reply_markup=cancel_button_keyboard(),
+            parse_mode="Markdown"
+        )
+
+    async def _core_job():
+        await status_msg.edit_text(
+            f"🌐 *Membuka headless Chromium ke:* `{raw_url}`...",
+            reply_markup=cancel_button_keyboard(),
+            parse_mode="Markdown"
+        )
         res = await browse_and_capture(raw_url)
         if res["success"]:
             caption = (
                 f"🌐 *Live Web Capture:* `{res['title']}`\n"
                 f"🔗 *URL:* {res['url']} (Status: `{res['status_code']}`)\n"
-                f"⚡ *Render Time:* `{res['latency']}`\n\n"
+                f"⚡ *Engine:* `Headless Chromium (Playwright)` ({res['latency']})\n\n"
                 f"📝 *Text Snippet:*\n_{res['text_snippet'][:300]}..._"
             )
             await update.message.reply_photo(
@@ -211,6 +246,10 @@ async def execute_browser_task(update: Update, context: ContextTypes.DEFAULT_TYP
             await status_msg.delete()
         else:
             await status_msg.edit_text(f"❌ Gagal membuka website: {res['error']}", reply_markup=after_browser_keyboard())
+
+    async def _runner():
+        from services.queue_service import run_in_queue
+        await run_in_queue(_queue_cb, _core_job, estimated_job_seconds=15)
 
     task = asyncio.create_task(_runner())
     active_user_tasks[uid] = task
@@ -226,18 +265,30 @@ async def execute_browser_task(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 async def execute_image_generation(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str, ref_url: str = None):
-    """Eksekusi Render Gambar dengan Realtime Queue Tracker dan Dynamic Bar."""
+    """Eksekusi Render Gambar dengan Antrean (Queue), Realtime Progress, dan Notif Admin."""
     uid = update.effective_user.id
+    user = update.effective_user
     st = get_user_state(uid)
     ratio = st["image_ratio"]
     loop = asyncio.get_running_loop()
 
-    initial_bar = generate_progress_bar(10, total_blocks=10)
+    # Kirim notif prompt generate ke admin
+    act_name = "Edit Foto / Img2Img" if ref_url else "Text-to-Image (/draw)"
+    await notify_admin_activity(context, user, act_name, prompt)
+
     status_msg = await update.message.reply_text(
-        f"🎨 Generating *{ratio}* · *10%*\n`{initial_bar}`\n⏳ _Menghubungi antrean cluster GPU..._",
+        f"🎨 *Menyiapkan Studio Gambar...*\n⏳ _Memeriksa antrean GPU cluster..._",
         reply_markup=cancel_button_keyboard(),
         parse_mode="Markdown"
     )
+
+    async def _queue_cb(wait_pos: int, est_sec: int):
+        await status_msg.edit_text(
+            f"⏳ *Antrean Studio #{wait_pos}*\n"
+            f"Ada tugas lain yang sedang diproses GPU. Estimasi giliran: ~{est_sec} detik...",
+            reply_markup=cancel_button_keyboard(),
+            parse_mode="Markdown"
+        )
 
     def on_live_progress(status_text: str, elapsed_sec: int, percent: int):
         bar = generate_progress_bar(percent, total_blocks=10)
@@ -247,7 +298,7 @@ async def execute_image_generation(update: Update, context: ContextTypes.DEFAULT
             loop
         )
 
-    async def _runner():
+    async def _core_render():
         t0 = time.time()
         from services.image_fallback_service import generate_image_with_fallback
         res = await asyncio.to_thread(
@@ -277,6 +328,10 @@ async def execute_image_generation(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text("Mau generate lagi? 👇", reply_markup=after_generate_keyboard())
         else:
             await status_msg.edit_text(f"❌ Gagal merender gambar: {res['error']}", reply_markup=after_generate_keyboard())
+
+    async def _runner():
+        from services.queue_service import run_in_queue
+        await run_in_queue(_queue_cb, _core_render, estimated_job_seconds=25)
 
     task = asyncio.create_task(_runner())
     active_user_tasks[uid] = task
@@ -402,8 +457,13 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     # 4. Mode Chat / Kategori
+    user = update.effective_user
     cat_info = HF_OFFICIAL_CATEGORIES.get(st["category"], HF_OFFICIAL_CATEGORIES["chatbots"])
     p_info = PERSONAS.get(st["persona"], PERSONAS["hermes"])
+    
+    # Notif Chat Prompt ke Admin
+    await notify_admin_activity(context, user, f"Chat LLM ({p_info['name'].split()[0]})", user_text)
+
     status_msg = await update.message.reply_text(
         f"⏳ *{p_info['name'].split()[0]} sedang memproses...*",
         reply_markup=cancel_button_keyboard(),
@@ -419,8 +479,9 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             system_prompt=p_info["sys_prompt"]
         )
         if res["success"]:
-            fb_tag = " _(Auto-Fallback)_" if res.get("fallback_used") else ""
-            reply = f"{res['response']}\n\n⚡ _Engine: {res['model']}{fb_tag} ({res['latency']})_"
+            fb_tag = " 🔄 *(Auto-Fallback ke Backup Engine)*" if res.get("fallback_used") else ""
+            footer = f"\n\n🤖 *Model Penjawab:* `{res['model']}`{fb_tag}\n⚡ *Latency:* `{res['latency']}`"
+            reply = f"{res['response']}{footer}"
             if len(reply) > 4000:
                 for chunk in [reply[i:i+4000] for i in range(0, len(reply), 4000)]:
                     await update.message.reply_text(chunk)
