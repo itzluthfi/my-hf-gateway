@@ -3,9 +3,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-HF_TOKEN = os.getenv("HF_TOKEN", "")
+HF_TOKENS_RAW = os.getenv("HF_TOKEN", "")
+HF_TOKENS = [t.strip() for t in HF_TOKENS_RAW.split(",") if t.strip()]
+HF_TOKEN = HF_TOKENS[0] if HF_TOKENS else ""
+
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+
+def get_random_hf_token() -> str:
+    """Mengambil salah satu HF Token dari pool untuk rotasi kuota ZeroGPU/Router."""
+    import random
+    return random.choice(HF_TOKENS) if HF_TOKENS else ""
 
 # ─────────────────────────────────────────────────────────────
 # 1. PERSONA KOGNITIF & GODMODE OPERATING PROFILES
