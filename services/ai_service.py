@@ -59,11 +59,16 @@ def ask_llm(prompt: str, user_id: int = None, preferred_model_id: str = "Qwen/Qw
                     if user_id:
                         save_user_turn(user_id, "user", prompt)
                         save_user_turn(user_id, "assistant", content.strip())
+                    usage = data.get("usage", {})
+                    p_tok = usage.get("prompt_tokens", len(prompt.split()) * 2)
+                    c_tok = usage.get("completion_tokens", len(content.split()) * 2)
                     return {
                         "success": True,
                         "model": mid,
                         "response": content.strip(),
                         "latency": f"{elapsed:.2f}s",
+                        "prompt_tokens": p_tok,
+                        "completion_tokens": c_tok,
                         "fallback_used": (mid != preferred_model_id)
                     }
             attempts.append(f"{mid} (HTTP {r.status_code})")

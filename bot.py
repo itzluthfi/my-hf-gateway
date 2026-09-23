@@ -10,6 +10,7 @@ from telegram.ext import (
 from services.ai_service import ask_llm, generate_image_mcp, generate_progress_bar
 from services.browser_service import browse_and_capture
 from services.memory_service import clear_user_memory
+from services.analytics_service import track_usage, get_analytics_summary
 from services.telegram_setup import register_bot_commands
 from config import (
     TELEGRAM_BOT_TOKEN, ADMIN_ID, HF_OFFICIAL_CATEGORIES, 
@@ -46,7 +47,7 @@ def main_dashboard_keyboard(uid: int):
     st = get_user_state(uid)
     p_info = PERSONAS.get(st["persona"], PERSONAS["hermes"])
     
-    return InlineKeyboardMarkup([
+    rows = [
         [
             InlineKeyboardButton(f"🎭 Persona: {p_info['icon']} {p_info['name'].split()[0]}", callback_data="nav_personas"),
             InlineKeyboardButton("🌐 Live Browser", callback_data="action_browser_flow")
@@ -63,7 +64,15 @@ def main_dashboard_keyboard(uid: int):
             InlineKeyboardButton("🧹 Reset Ingatan", callback_data="btn_reset_memory"),
             InlineKeyboardButton("⚡ Status", callback_data="nav_status")
         ]
-    ])
+    ]
+    
+    # Tombol Khusus Admin jika UID cocok dengan ADMIN_ID
+    if uid == ADMIN_ID and ADMIN_ID != 0:
+        rows.append([
+            InlineKeyboardButton("👑 Dasbor Admin & Usage Analytics", callback_data="nav_admin_panel")
+        ])
+        
+    return InlineKeyboardMarkup(rows)
 
 
 def cancel_button_keyboard():
@@ -311,6 +320,18 @@ async def execute_image_generation(update: Update, context: ContextTypes.DEFAULT
         elapsed = int(time.time() - t0)
 
         if res["success"]:
+            # Record analytics for image generation
+            track_usage(
+                user_id=uid,
+                user_name=user.first_name,
+                username=user.username,
+                action="edit_img" if ref_url else "draw",
+                model_id=res.get("cluster_used", "Qwen Image MCP"),
+                prompt_tokens=len(prompt.split()) * 2,
+                completion_tokens=0,
+                is_fallback=res.get("fallback_used", False)
+            )
+
             final_bar = generate_progress_bar(100, total_blocks=10)
             cluster_info = res.get("cluster_used", "Qwen Image MCP")
             final_status = f"🎨 Generating *{ratio}* · *100%*\n`{final_bar}`\n⏱️ {elapsed}s · _Selesai! ({cluster_info})_"
@@ -479,6 +500,18 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
             system_prompt=p_info["sys_prompt"]
         )
         if res["success"]:
+            # Record Analytics
+            track_usage(
+                user_id=uid,
+                user_name=user.first_name,
+                username=user.username,
+                action="chat",
+                model_id=res.get("model"),
+                prompt_tokens=res.get("prompt_tokens", 0),
+                completion_tokens=res.get("completion_tokens", 0),
+                is_fallback=res.get("fallback_used", False)
+            )
+            
             fb_tag = " 🔄 *(Auto-Fallback ke Backup Engine)*" if res.get("fallback_used") else ""
             footer = f"\n\n🤖 *Model Penjawab:* `{res['model']}`{fb_tag}\n⚡ *Latency:* `{res['latency']}`"
             reply = f"{res['response']}{footer}"
@@ -513,6 +546,80 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     uid = query.from_user.id
     st = get_user_state(uid)
+
+    # ── ADMIN PANEL DASHBOARD ──
+    if data == "nav_admin_panel":
+        if uid != ADMIN_ID:
+            await query.edit_message_text("⛔ *Akses Ditolak:* Menu ini khusus Administrator.", parse_mode="Markdown")
+            return
+        
+        summary = get_analytics_summary()
+        text = (
+            "👑 *DASBOR ADMINISTRATOR & USAGE METRICS*\n\n"
+            f"⏱️ *Bot Uptime:* `{summary['uptime']}`\n"
+            f"👥 *Total Pengguna Unik:* `{summary['unique_users_count']}` user\n"
+            f"📊 *Total Request:* `{summary['total_requests']}` requests\n"
+            f"🪙 *Total Estimasi Token:* `{summary['total_tokens_est']:,}` tokens\n\n"
+            "📈 *Breakdown Aktivitas:*\n"
+            f"• 💬 Chat LLM: `{summary['action_breakdown'].get('chat', 0)}`\n"
+            f"• 🎨 Generate Gambar: `{summary['action_breakdown'].get('draw', 0)}`\n"
+            f"• 🖼️ Edit Foto: `{summary['action_breakdown'].get('edit_img', 0)}`\n"
+            f"• 🌐 Live Browser: `{summary['action_breakdown'].get('browser', 0)}`"
+        )
+        buttons = [
+            [
+                InlineKeyboardButton("🏆 Ranking Model Terpopuler", callback_data="admin_view_models"),
+                InlineKeyboardButton("👥 Top Active Users", callback_data="admin_view_users")
+            ],
+            [
+                InlineKeyboardButton("🔄 Refresh Data", callback_data="nav_admin_panel"),
+                InlineKeyboardButton("🔙 Menu Utama", callback_data="nav_main")
+            ]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+    elif data == "admin_view_models":
+        if uid != ADMIN_ID:
+            return
+        summary = get_analytics_summary()
+        top_models = summary["top_models"]
+        
+        text = "🏆 *RANKING & PENGGUNAAN MODEL AI:*\n\n"
+        if not top_models:
+            text += "_Belum ada data penggunaan model._"
+        else:
+            for idx, (m_id, m_data) in enumerate(top_models, 1):
+                text += (
+                    f"*{idx}. `{m_id}`*\n"
+                    f"   • Dipanggil: `{m_data['calls']}` kali\n"
+                    f"   • Est. Tokens: `{m_data['tokens_est']:,}`\n"
+                    f"   • Auto-Fallback: `{m_data.get('fallbacks', 0)}` kali\n\n"
+                )
+        buttons = [
+            [InlineKeyboardButton("🔙 Kembali ke Dasbor Admin", callback_data="nav_admin_panel")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+    elif data == "admin_view_users":
+        if uid != ADMIN_ID:
+            return
+        summary = get_analytics_summary()
+        top_users = summary["top_users"]
+        
+        text = "👥 *LEADERBOARD AKTIVITAS PENGGUNA:*\n\n"
+        if not top_users:
+            text += "_Belum ada interaksi user yang tercatat._"
+        else:
+            for idx, (u_id, u_data) in enumerate(top_users, 1):
+                text += (
+                    f"*{idx}. {u_data['name']}* (`@{u_data['username']}`) [ID: `{u_id}`]\n"
+                    f"   • Total Aksi: `{u_data['calls']}` kali\n"
+                    f"   • Terakhir Aktif: `{u_data['last_seen']}`\n\n"
+                )
+        buttons = [
+            [InlineKeyboardButton("🔙 Kembali ke Dasbor Admin", callback_data="nav_admin_panel")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
     # ── STOP PROSES DARI TOMBOL ──
     if data == "btn_stop_process":
