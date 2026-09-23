@@ -345,7 +345,14 @@ async def execute_image_generation(update: Update, context: ContextTypes.DEFAULT
                 f"🎭 *Gaya:* `{res['style']}` | 📐 *Rasio:* `{res['ratio']}`\n"
                 f"⚡ *Engine:* `{cluster_info}` ({res['latency']})"
             )
-            await update.message.reply_photo(photo=res["image_url"], caption=caption, parse_mode="Markdown")
+            img_target = res["image_url"]
+            if img_target.startswith("data:image"):
+                import base64
+                header, b64data = img_target.split(",", 1)
+                img_bytes = base64.b64decode(b64data)
+                await update.message.reply_photo(photo=io.BytesIO(img_bytes), caption=caption, parse_mode="Markdown")
+            else:
+                await update.message.reply_photo(photo=img_target, caption=caption, parse_mode="Markdown")
             await update.message.reply_text("Mau generate lagi? 👇", reply_markup=after_generate_keyboard())
         else:
             await status_msg.edit_text(f"❌ Gagal merender gambar: {res['error']}", reply_markup=after_generate_keyboard())
