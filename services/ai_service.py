@@ -181,12 +181,21 @@ def generate_image_mcp(
                         content = res.get("content", []) if isinstance(res, dict) else []
                         for item in content:
                             text_val = item.get("text", "")
-                            if "http" in text_val:
-                                import ast
-                                parsed = ast.literal_eval(text_val)
-                                if isinstance(parsed, list) and len(parsed) > 0 and "url" in parsed[0]:
-                                    image_url = parsed[0]["url"]
+                            if "http" in text_val and "qwen-image" in text_val:
+                                import re
+                                # Extract url via regex
+                                match = re.search(r"'(https?://[^']+)'|\"(https?://[^\"]+)\"", text_val)
+                                if match:
+                                    image_url = match.group(1) or match.group(2)
                                     break
+                                try:
+                                    import ast
+                                    parsed = ast.literal_eval(text_val)
+                                    if isinstance(parsed, list) and len(parsed) > 0 and "url" in parsed[0]:
+                                        image_url = parsed[0]["url"]
+                                        break
+                                except Exception:
+                                    pass
                         if image_url:
                             break
                 except Exception:

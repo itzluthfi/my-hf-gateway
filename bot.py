@@ -638,14 +638,19 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("ℹ️ Proses sudah selesai atau tidak ada yang aktif.", parse_mode="Markdown")
 
     elif data == "nav_main":
+        st["waiting_for"] = None
         p_info = PERSONAS.get(st["persona"], PERSONAS["hermes"])
         text = (
-            f"👑 *HUGGING FACE MULTI-AI HUB v6.0*\n\n"
+            f"👑 *HUGGING FACE MULTI-AI HUB v6.1*\n\n"
             f"🪽 *Persona:* `{p_info['icon']} {p_info['name']}`\n"
             f"🎨 *Preset:* `{st['image_style'].title()}` ({st['image_ratio']})\n\n"
             "Pilih opsi di bawah:"
         )
-        await query.edit_message_text(text, reply_markup=main_dashboard_keyboard(uid), parse_mode="Markdown")
+        try:
+            await query.edit_message_text(text, reply_markup=main_dashboard_keyboard(uid), parse_mode="Markdown")
+        except Exception:
+            # Jika pesan sebelumnya adalah Photo atau tidak bisa diedit teksnya, kirim pesan baru
+            await query.message.reply_text(text, reply_markup=main_dashboard_keyboard(uid), parse_mode="Markdown")
 
     elif data == "action_browser_flow":
         st["waiting_for"] = "browser_url"
